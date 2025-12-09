@@ -2,6 +2,8 @@ import os
 import google.generativeai as genai
 from dotenv import load_dotenv
 from src.database import get_schema, run_query
+from src.vector_db import get_relevant_tables
+import time
 
 # 1. Load Secrets
 load_dotenv()
@@ -40,9 +42,29 @@ def clean_sql(text):
 def ask_data(question):
     print(f"\n🤖 User Question: {question}")
     
-    # Setup Schema
-    schema_dict = get_schema()
-    schema_str = "\n".join([f"Table {table}: {cols}" for table, cols in schema_dict.items()])
+    # --- RAG LAYER START ---
+    print("📚 Consulting Vector DB...")
+    
+    relevant_table_names = get_relevant_tables(question, n_results=5)
+    
+    # ⚠️ SAFETY FALLBACK: If RAG fails, use ALL tables
+    if not relevant_table_names:
+        print("⚠️ RAG returned no results. Falling back to ALL tables.")
+        relevant_table_names = list(get_schema().keys())
+    else:
+        print(f"🎯 Selected Tables: {relevant_table_names}")
+    
+    # Get full schema
+    full_schema = get_schema()
+    
+    # Filter dictionary
+    filtered_schema = {k: v for k, v in full_schema.items() if k in relevant_table_names}
+    # --- RAG LAYER END ---
+    
+    # Format for Prompt
+    schema_str = ""
+    for table, info in filtered_schema.items():
+        schema_str += f"Table: {table}\nColumns: {', '.join(info)}\n\n"
     
     # Initial Prompt
     current_prompt = BASE_PROMPT.format(schema=schema_str) + f"\nUser Question: {question}"
@@ -52,6 +74,9 @@ def ask_data(question):
     
     while attempt < max_retries:
         print(f"⏳ Thinking... (Attempt {attempt+1}/{max_retries})")
+        
+        # --- FIX 1: Initialize variable here ---
+        sql_query = "UNKNOWN_SQL" 
         
         try:
             # 1. Ask Gemini
@@ -63,23 +88,29 @@ def ask_data(question):
 
             print(f"📝 Generated SQL: {sql_query}")
             
-            # 2. Run SQL (This function catches DB errors and returns them as strings)
+            # 2. Run SQL
+            # Note: run_query returns a dict {"columns": [], "data": []} OR a string starting with "Error:"
             results = run_query(sql_query)
             
-            # 3. Check if 'results' is actually an error message string
-            # (Our database.py returns a string starting with "Error:" if it fails)
+            # 3. Check for DB Errors
             if isinstance(results, str) and results.startswith("Error"):
-                raise Exception(results) # Force it to go to the 'except' block
+                raise Exception(results) # Force retry logic
             
-            # If we get here, it worked!
+            # If successful, return the dict
             return results
             
         except Exception as e:
             error_msg = str(e)
             print(f"⚠️ SQL Failed: {error_msg}")
             
-            # 4. PREPARE THE SELF-CORRECTION
-            # We feed the error back into the prompt for the next loop
+            # --- FIX: Wait before retrying ---
+            print("💤 Waiting 2s before retry...")
+            time.sleep(2)  # <--- NEW LINE
+            
+            if sql_query == "UNKNOWN_SQL":
+                attempt += 1
+                continue 
+
             current_prompt = ERROR_PROMPT.format(
                 question=question,
                 sql=sql_query,
@@ -91,22 +122,5 @@ def ask_data(question):
 
 # --- TEST AREA ---
 if __name__ == "__main__":
-    # Test 1: The Easy One
-    print("--- Test 1 (Easy) ---")
-    ask_data("Top 3 customers")
-    
-    print("\n" + "="*50 + "\n")
-    
-    # Test 2: The Trick Question (To trigger Self-Correction)
-    # The database has 'FirstName', but we will ask for 'First_Name' (underscore)
-    # A naive AI might hallucinate 'First_Name', causing an error.
-    # The Agent should catch it, realize 'First_Name' doesn't exist, and switch to 'FirstName'.
-    print("--- Test 2 (Self-Correction) ---")
-    results = ask_data("Show me the full name (combined first and last) of all employees.")
-    
-    print("\n📊 Final Results:")
-    if isinstance(results, list):
-        for row in results[:3]: # Print just first 3
-            print(row)
-    else:
-        print(results)
+    answer = ask_data("Show me the top 3 Customer names who spent the most money.")
+    print(answer)

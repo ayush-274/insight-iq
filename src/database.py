@@ -18,11 +18,15 @@ def get_schema():
     return schema_info
 
 def run_query(sql_query):
-    """Executes a SQL query safely and returns results"""
+    """Executes a SQL query safely and returns results + headers"""
     with engine.connect() as conn:
         try:
             result = conn.execute(text(sql_query))
-            return result.fetchall()
+            # Return a Dictionary with keys and data
+            return {
+                "columns": list(result.keys()), 
+                "data": result.fetchall()
+            }
         except Exception as e:
             return f"Error: {e}"
 
