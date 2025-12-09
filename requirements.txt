@@ -1,0 +1,7 @@
+sqlalchemy
+python-dotenv
+requests
+google-generativeai
+langchain
+langchain-community
+langchain-experimental
