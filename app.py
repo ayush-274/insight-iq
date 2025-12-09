@@ -1,3 +1,12 @@
+# --- CHROMA DB FIX FOR STREAMLIT CLOUD ---
+try:
+    # This specifically fixes the "Old SQLite" error on Cloud servers
+    __import__('pysqlite3')
+    import sys
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except ImportError:
+    # If we are on your laptop (which works fine), pass over this
+    pass
 import streamlit as st
 import pandas as pd
 from src.llm_engine import ask_data
