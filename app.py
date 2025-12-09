@@ -1,4 +1,4 @@
-# --- 1. CRITICAL FIX: MUST BE AT THE VERY TOP ---
+# --- 1. CRITICAL: SQLITE FIX FOR CLOUD (Must be at the very top) ---
 try:
     __import__('pysqlite3')
     import sys
@@ -7,96 +7,78 @@ except ImportError:
     pass
 
 import streamlit as st
+import pandas as pd
 import os
-import sqlite3
-import google.generativeai as genai
+from src.llm_engine import ask_data
 
-# --- PAGE SETUP ---
-st.set_page_config(page_title="InsightIQ Debugger", page_icon="🔧")
-st.title("🔧 InsightIQ Diagnostics")
+# --- 2. SETUP PAGE ---
+st.set_page_config(page_title="InsightIQ", page_icon="📊")
+st.title("📊 InsightIQ: AI Data Analyst")
 
-# --- CHECK 1: SQLITE VERSION (For ChromaDB) ---
-st.header("1. System Check")
-sqlite_version = sqlite3.sqlite_version
-st.write(f"**SQLite Version:** `{sqlite_version}`")
+# --- 3. CLOUD SECRETS BRIDGE ---
+# This ensures the API key from Streamlit Secrets works with your other scripts
+if "GEMINI_API_KEY" in st.secrets:
+    os.environ["GEMINI_API_KEY"] = st.secrets["GEMINI_API_KEY"]
 
-if sqlite_version < "3.35.0":
-    st.error("❌ SQLite version is too old! ChromaDB will crash.")
-else:
-    st.success("✅ SQLite version is good (>= 3.35.0).")
+# --- 4. CHAT HISTORY ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-# --- CHECK 2: DATABASE FILE ---
-st.header("2. Database Check")
-if os.path.exists("chinook.db"):
-    st.success(f"✅ 'chinook.db' found! Size: {os.path.getsize('chinook.db')/1024:.2f} KB")
-else:
-    st.error("❌ 'chinook.db' NOT FOUND. The app cannot query data.")
-    st.info("💡 Fix: Run `git add -f chinook.db`, commit, and push again.")
+# Display history
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+        if "data" in message:
+            st.dataframe(message["data"])
 
-# --- CHECK 3: API KEY ---
-st.header("3. API Key Check")
-api_key = os.getenv("GEMINI_API_KEY")
+# --- 5. MAIN LOGIC ---
+if prompt := st.chat_input("Ask a question (e.g., 'Top 5 invoices')"):
+    # Show User Message
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-if not api_key:
-    # Try getting it from st.secrets as a backup
-    try:
-        api_key = st.secrets["GEMINI_API_KEY"]
-        os.environ["GEMINI_API_KEY"] = api_key # Inject back to env for other scripts
-        st.success("✅ API Key found in `st.secrets`.")
-    except:
-        st.error("❌ API Key is MISSING.")
-        st.info("💡 Fix: Go to 'Manage App' -> 'Settings' -> 'Secrets' and add GEMINI_API_KEY.")
-else:
-    st.success("✅ API Key found in Environment Variables.")
-
-# --- CHECK 4: GEMINI CONNECTIVITY ---
-st.header("4. AI Connectivity Test")
-if api_key:
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-flash-latest')
-        with st.spinner("🤖 Testing Gemini API connection..."):
-            response = model.generate_content("Say 'Hello' if you can hear me.")
-            st.success(f"✅ Gemini Responded: {response.text}")
-    except Exception as e:
-        st.error(f"❌ Gemini Connection Failed: {e}")
-
-# --- RESTORE APP BUTTON ---
-st.divider()
-st.subheader("🏁 Ready to run the real app?")
-if st.button("Run Main App"):
-    # This imports the real app logic ONLY if everything above passes
-    from src.llm_engine import ask_data
-    import pandas as pd
-    
-    st.markdown("---")
-    st.subheader("📊 InsightIQ Chat")
-    
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            if "data" in message:
-                st.dataframe(message["data"])
-
-    if prompt := st.chat_input("Ask a question..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            with st.spinner("🧠 Thinking..."):
-                response = ask_data(prompt)
+    # Show AI Response
+    with st.chat_message("assistant"):
+        with st.spinner("🧠 Thinking..."):
+            
+            # CALL THE BRAIN
+            response = ask_data(prompt)
+            
+            # HANDLE ERRORS
+            if isinstance(response, str):
+                st.error(response)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+            
+            # HANDLE SUCCESS
+            else:
+                columns = response["columns"]
+                data = response["data"]
                 
-                if isinstance(response, str):
-                    st.error(response)
-                    st.session_state.messages.append({"role": "assistant", "content": response})
-                else:
-                    columns = response["columns"]
-                    data = response["data"]
-                    df = pd.DataFrame(data, columns=columns)
-                    st.success("✅ Data Retrieved")
-                    st.dataframe(df)
-                    st.session_state.messages.append({"role": "assistant", "content": "Results:", "data": df})
+                # Create DataFrame
+                df = pd.DataFrame(data, columns=columns)
+                
+                st.success("✅ Analysis Complete")
+                st.dataframe(df)
+                
+                # AUTO-VISUALIZATION (Bar Chart)
+                if len(df.columns) == 2:
+                    x_col = df.columns[0]
+                    y_col = df.columns[1]
+                    st.write(f"📊 **Visualizing: {x_col} vs {y_col}**")
+                    
+                    try:
+                        # Clean data for plotting
+                        df[y_col] = pd.to_numeric(df[y_col], errors='coerce')
+                        df = df.dropna(subset=[y_col])
+                        
+                        st.bar_chart(data=df, x=x_col, y=y_col, color="#4A90E2")
+                    except Exception as e:
+                        st.warning(f"Could not graph: {e}")
+
+                # Save to History
+                st.session_state.messages.append({
+                    "role": "assistant", 
+                    "content": "✅ Analysis Complete",
+                    "data": df
+                })
