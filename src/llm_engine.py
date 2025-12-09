@@ -40,72 +40,76 @@ def clean_sql(text):
     return text.replace("```sql", "").replace("```", "").strip()
 
 def ask_data(question):
-    print(f"\n🤖 User Question: {question}")
+    print(f"\n🚀 DEBUG: Entering ask_data with question: {question}")
     
-    # --- RAG LAYER START ---
-    print("📚 Consulting Vector DB...")
-    
-    relevant_table_names = get_relevant_tables(question, n_results=5)
-    
-    # ⚠️ SAFETY FALLBACK: If RAG fails, use ALL tables
-    if not relevant_table_names:
-        print("⚠️ RAG returned no results. Falling back to ALL tables.")
-        relevant_table_names = list(get_schema().keys())
+    # Check 1: Does the DB file exist?
+    if not os.path.exists("chinook.db"):
+        print("❌ DEBUG: chinook.db NOT FOUND in current directory!")
+        return "Error: Database file not found on server."
     else:
-        print(f"🎯 Selected Tables: {relevant_table_names}")
+        print("✅ DEBUG: chinook.db found.")
+
+    # --- RAG LAYER ---
+    print("📚 DEBUG: Calling Vector DB...")
+    try:
+        # We put this in try/except to catch Chroma hanging
+        relevant_table_names = get_relevant_tables(question, n_results=5)
+        print(f"🎯 DEBUG: RAG returned: {relevant_table_names}")
+    except Exception as e:
+        print(f"❌ DEBUG: RAG Failed: {e}")
+        relevant_table_names = []
     
-    # Get full schema
+    # SAFETY FALLBACK
+    if not relevant_table_names:
+        print("⚠️ DEBUG: RAG returned empty. Using ALL tables.")
+        relevant_table_names = list(get_schema().keys())
+    
+    # Schema Setup
+    print("📝 DEBUG: Building Schema String...")
     full_schema = get_schema()
-    
-    # Filter dictionary
     filtered_schema = {k: v for k, v in full_schema.items() if k in relevant_table_names}
-    # --- RAG LAYER END ---
     
-    # Format for Prompt
     schema_str = ""
     for table, info in filtered_schema.items():
         schema_str += f"Table: {table}\nColumns: {', '.join(info)}\n\n"
     
-    # Initial Prompt
+    # Prompt Setup
     current_prompt = BASE_PROMPT.format(schema=schema_str) + f"\nUser Question: {question}"
     
     max_retries = 3
     attempt = 0
     
     while attempt < max_retries:
-        print(f"⏳ Thinking... (Attempt {attempt+1}/{max_retries})")
-        
-        # --- FIX 1: Initialize variable here ---
-        sql_query = "UNKNOWN_SQL" 
+        print(f"⏳ DEBUG: Starting Gemini Attempt {attempt+1}...")
+        sql_query = "UNKNOWN_SQL"
         
         try:
-            # 1. Ask Gemini
+            # Hit Gemini
+            print("🤖 DEBUG: Sending request to Gemini...")
             response = model.generate_content(current_prompt)
+            print("✅ DEBUG: Gemini Responded.")
+            
             sql_query = clean_sql(response.text)
+            print(f"📝 DEBUG: SQL Generated: {sql_query}")
             
             if "ERROR" in sql_query:
                 return "❌ AI could not understand the question."
 
-            print(f"📝 Generated SQL: {sql_query}")
-            
-            # 2. Run SQL
-            # Note: run_query returns a dict {"columns": [], "data": []} OR a string starting with "Error:"
+            # Run Query
+            print("💾 DEBUG: Running SQL on DB...")
             results = run_query(sql_query)
+            print(f"✅ DEBUG: Query finished. Result type: {type(results)}")
             
-            # 3. Check for DB Errors
             if isinstance(results, str) and results.startswith("Error"):
-                raise Exception(results) # Force retry logic
+                raise Exception(results)
             
-            # If successful, return the dict
             return results
             
         except Exception as e:
             error_msg = str(e)
-            print(f"⚠️ SQL Failed: {error_msg}")
-            
-            # --- FIX: Wait before retrying ---
-            print("💤 Waiting 2s before retry...")
-            time.sleep(2)  # <--- NEW LINE
+            print(f"⚠️ DEBUG: Attempt Failed: {error_msg}")
+            print("💤 DEBUG: Sleeping 2s...")
+            time.sleep(2)
             
             if sql_query == "UNKNOWN_SQL":
                 attempt += 1
@@ -118,6 +122,7 @@ def ask_data(question):
             )
             attempt += 1
     
+    print("❌ DEBUG: All attempts failed.")
     return "❌ Failed to generate valid SQL after 3 attempts."
 
 # --- TEST AREA ---
